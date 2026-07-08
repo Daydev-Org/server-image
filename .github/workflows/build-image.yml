@@ -1,0 +1,104 @@
+name: Build server image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: Target architecture to build
+        type: choice
+        default: x86-64
+        options:
+          - x86-64
+          - arm64
+
+# Needed by the release step to upload assets to a GitHub Release.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # For a tag/push/PR build we build x86-64 by default. A manual
+        # workflow_dispatch run builds whichever architecture was chosen.
+        architecture:
+          - ${{ github.event.inputs.architecture || 'x86-64' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Register binfmt handlers so mkosi can build a foreign-architecture
+      # rootfs (e.g. arm64 on an amd64 runner). Skipped for native x86-64.
+      - name: Set up QEMU for cross-architecture builds
+        if: matrix.architecture != 'x86-64'
+        uses: docker/setup-qemu-action@v3
+
+      # Installs the pinned mkosi (v26), enables unprivileged user namespaces,
+      # and grants access to /dev/kvm so the image can be boot-tested.
+      - name: Set up mkosi
+        uses: systemd/mkosi@v26
+
+      - name: Configure root password
+        env:
+          # Optional: a crypt(3) hash, e.g. from `openssl passwd -6`.
+          ROOT_PASSWORD_HASH: ${{ secrets.ROOT_PASSWORD_HASH }}
+        run: |
+          if [ -n "${ROOT_PASSWORD_HASH:-}" ]; then
+            printf 'hashed:%s\n' "$ROOT_PASSWORD_HASH" > mkosi.rootpw
+          else
+            echo "::warning title=Default root password::No ROOT_PASSWORD_HASH secret set; the image uses the default password 'daydev'. Set the secret (or change the password) before shipping."
+            printf 'daydev\n' > mkosi.rootpw
+          fi
+          chmod 600 mkosi.rootpw
+
+      - name: Install SSH authorized key (optional)
+        env:
+          # Optional: a public key line to drop into /root/.ssh/authorized_keys.
+          SSH_AUTHORIZED_KEY: ${{ secrets.SSH_AUTHORIZED_KEY }}
+        run: |
+          if [ -n "${SSH_AUTHORIZED_KEY:-}" ]; then
+            install -d -m 700 mkosi.extra/root/.ssh
+            printf '%s\n' "$SSH_AUTHORIZED_KEY" > mkosi.extra/root/.ssh/authorized_keys
+            chmod 600 mkosi.extra/root/.ssh/authorized_keys
+          fi
+
+      - name: Build image
+        run: mkosi --architecture "${{ matrix.architecture }}" --force build
+
+      - name: Compress image and checksum
+        id: package
+        run: |
+          set -eu
+          cd mkosi.output
+          raw="$(ls *.raw)"
+          out="daydev-server-${{ matrix.architecture }}.raw.zst"
+          zstd -19 -T0 -q -o "$out" "$raw"
+          sha256sum "$out" > "$out.sha256"
+          rm -f "$raw"
+          ls -lh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daydev-server-${{ matrix.architecture }}
+          path: |
+            mkosi.output/daydev-server-*.raw.zst
+            mkosi.output/daydev-server-*.raw.zst.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            mkosi.output/daydev-server-*.raw.zst
+            mkosi.output/daydev-server-*.raw.zst.sha256

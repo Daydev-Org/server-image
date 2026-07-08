@@ -1,0 +1,14 @@
+# mkosi build outputs and caches
+/mkosi.output/
+/mkosi.cache/
+/mkosi.builddir/
+/mkosi.packages/
+*.raw
+*.raw.*
+
+# Secrets materialized at build time — never commit these
+/mkosi.rootpw
+/mkosi.extra/root/.ssh/
+
+# JetBrains IDE
+/.idea/

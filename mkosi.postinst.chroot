@@ -1,0 +1,33 @@
+#!/bin/sh
+# Post-installation script, run *inside* the image (mkosi chroots in because of
+# the .chroot extension). Selects the minimal set of services to enable and
+# cleans up per-machine state so the shipped image is generic.
+set -eu
+
+echo "[postinst] configuring minimal service set"
+
+# The only services that run by default: networking, DNS, time sync, SSH, and
+# the first-boot host-key generator. Everything else stays off.
+systemctl enable \
+    systemd-networkd.service \
+    systemd-resolved.service \
+    systemd-timesyncd.service \
+    ssh.service \
+    daydev-firstboot-sshkeys.service
+
+# Route glibc/NSS DNS lookups through systemd-resolved. The target is created
+# at boot once resolved starts; the symlink is intentionally dangling until then.
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+# Never ship baked-in SSH host keys: they would be identical on every unit.
+# daydev-firstboot-sshkeys.service regenerates them on first boot.
+rm -f /etc/ssh/ssh_host_*
+
+# If a build-time authorized key was injected (mkosi.extra/root/.ssh), make sure
+# the permissions are what sshd expects.
+if [ -d /root/.ssh ]; then
+    chmod 700 /root/.ssh
+    [ -f /root/.ssh/authorized_keys ] && chmod 600 /root/.ssh/authorized_keys
+fi
+
+echo "[postinst] done"

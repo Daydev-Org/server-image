@@ -1,0 +1,15 @@
+# Bring up any wired ethernet interface via DHCP using systemd-networkd.
+# This is the only networking service enabled by default, keeping the running
+# service set minimal. Adjust or add drop-ins for static addressing.
+
+[Match]
+Type=ether
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+UseDNS=yes
+
+[DHCPv6]
+UseDNS=yes

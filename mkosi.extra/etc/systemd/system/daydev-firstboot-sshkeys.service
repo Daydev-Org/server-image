@@ -1,0 +1,19 @@
+# Generate fresh SSH host keys the first time a shipped unit boots.
+#
+# The build deletes any host keys baked into the image (see mkosi.postinst.chroot)
+# so that every deployed server gets its own unique keys instead of sharing a
+# single fleet-wide key pair. This oneshot runs once, before sshd starts, and
+# then never again (the condition is false once keys exist).
+
+[Unit]
+Description=Generate SSH host keys on first boot
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target
