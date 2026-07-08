@@ -15,7 +15,6 @@ on:
           - x86-64
           - arm64
 
-# Needed by the release step to upload assets to a GitHub Release.
 permissions:
   contents: write
 
@@ -25,8 +24,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # For a tag/push/PR build we build x86-64 by default. A manual
-        # workflow_dispatch run builds whichever architecture was chosen.
         architecture:
           - ${{ github.event.inputs.architecture || 'x86-64' }}
 
@@ -34,14 +31,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Register binfmt handlers so mkosi can build a foreign-architecture
-      # rootfs (e.g. arm64 on an amd64 runner). Skipped for native x86-64.
       - name: Set up QEMU for cross-architecture builds
         if: matrix.architecture != 'x86-64'
         uses: docker/setup-qemu-action@v3
 
-      # Installs the pinned mkosi (v26), enables unprivileged user namespaces,
-      # and grants access to /dev/kvm so the image can be boot-tested.
       - name: Set up mkosi
         uses: systemd/mkosi@v26
 
@@ -72,25 +65,41 @@ jobs:
       - name: Build image
         run: mkosi --architecture "${{ matrix.architecture }}" --force build
 
-      - name: Compress image and checksum
-        id: package
+      - name: Install conversion tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --assume-yes --no-install-recommends \
+            qemu-utils grub-common grub-pc-bin grub-efi-amd64-bin \
+            xorriso mtools busybox-static cpio gzip
+
+      - name: Convert to shippable disk formats (img/qcow2/vmdk/vhd/vhdx/ova)
+        run: scripts/make-artifacts.sh "${{ matrix.architecture }}"
+
+      - name: Build bootable installer ISO (BIOS + UEFI)
+        run: sudo --preserve-env=GITHUB_WORKSPACE scripts/make-installer-iso.sh "${{ matrix.architecture }}"
+
+      - name: Checksums
         run: |
           set -eu
           cd mkosi.output
-          raw="$(ls *.raw)"
-          out="daydev-server-${{ matrix.architecture }}.raw.zst"
-          zstd -19 -T0 -q -o "$out" "$raw"
-          sha256sum "$out" > "$out.sha256"
-          rm -f "$raw"
+          rm -f -- *.raw            # the shipped raw is the .img; drop the intermediate
+          sha256sum daydev-server-* > SHA256SUMS
+          cat SHA256SUMS
           ls -lh
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: daydev-server-${{ matrix.architecture }}
           path: |
-            mkosi.output/daydev-server-*.raw.zst
-            mkosi.output/daydev-server-*.raw.zst.sha256
+            mkosi.output/daydev-server-*.img
+            mkosi.output/daydev-server-*.qcow2
+            mkosi.output/daydev-server-*.vmdk
+            mkosi.output/daydev-server-*.vhd
+            mkosi.output/daydev-server-*.vhdx
+            mkosi.output/daydev-server-*.ova
+            mkosi.output/daydev-server-*-installer.iso
+            mkosi.output/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
 
@@ -100,5 +109,11 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            mkosi.output/daydev-server-*.raw.zst
-            mkosi.output/daydev-server-*.raw.zst.sha256
+            mkosi.output/daydev-server-*.img
+            mkosi.output/daydev-server-*.qcow2
+            mkosi.output/daydev-server-*.vmdk
+            mkosi.output/daydev-server-*.vhd
+            mkosi.output/daydev-server-*.vhdx
+            mkosi.output/daydev-server-*.ova
+            mkosi.output/daydev-server-*-installer.iso
+            mkosi.output/SHA256SUMS
